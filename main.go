@@ -13,6 +13,20 @@ import (
 	"path/filepath"
 )
 
+type interlaceScan struct {
+	xFactor, yFactor, xOffset, yOffset int
+}
+
+var interlacing = []interlaceScan{
+	{8, 8, 0, 0},
+	{8, 8, 4, 0},
+	{4, 8, 0, 4},
+	{4, 4, 2, 0},
+	{2, 4, 0, 2},
+	{2, 2, 1, 0},
+	{1, 2, 0, 1},
+}
+
 func uncompress(data []byte) ([]byte, error) {
 	dataBuffer := bytes.NewReader(data)
 	r, err := zlib.NewReader(dataBuffer)
@@ -181,9 +195,42 @@ func parse(r io.Reader) (img image.Image, err error) {
 		return
 	}
 	bytesPerPixel := (bitsPerPixel + 7) / 8
-	data, err = applyFilter(data, width, height, bitsPerPixel, bytesPerPixel)
-	if err != nil {
-		return
+	if interlace {
+		completeData := make([]byte, width*height*bytesPerPixel)
+		dataOffset := 0
+		for pass := 0; pass < 7; pass++ {
+			p := interlacing[pass]
+			passWidth := (width - p.xOffset + p.xFactor - 1) / p.xFactor
+			passHeight := (height - p.yOffset + p.yFactor - 1) / p.yFactor
+			dataLength := passWidth * passHeight * bytesPerPixel
+			filterLength := passHeight
+			fmt.Println("passWidth:", passWidth, "passHeight:", passHeight, "size:", dataLength+filterLength, "(", dataLength, "+", filterLength, ")")
+
+			// パスのフィルタ適用後のデータを取得
+			passData := data[dataOffset : dataOffset+dataLength+filterLength]
+			passData, err = applyFilter(passData, passWidth, passHeight, bitsPerPixel, bytesPerPixel)
+			if err != nil {
+				return
+			}
+			dataOffset += dataLength + filterLength
+
+			// 対応したピクセルに再配置する
+			passOffset := 0
+			for y := 0; y < passHeight; y++ {
+				for x := 0; x < passWidth; x++ {
+					position := (y*p.yFactor+p.yOffset)*width + (p.xOffset + x*p.xFactor)
+					copy(completeData[position*bytesPerPixel:], passData[passOffset:passOffset+bytesPerPixel])
+					passOffset += bytesPerPixel
+				}
+			}
+
+		}
+		data = completeData
+	} else {
+		data, err = applyFilter(data, width, height, bitsPerPixel, bytesPerPixel)
+		if err != nil {
+			return
+		}
 	}
 	fmt.Println("applied filter type data length:", len(data))
 
@@ -206,7 +253,7 @@ func parse(r io.Reader) (img image.Image, err error) {
 }
 
 func main() {
-	inputFilePath := filepath.Join("images", "lenna.png")
+	inputFilePath := filepath.Join("images", "lenna-interlace.png")
 	inputFile, err := os.Open(inputFilePath)
 	if err != nil {
 		fmt.Println(err)
